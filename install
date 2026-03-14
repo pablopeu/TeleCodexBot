@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="${TELECODEXBOT_INSTALL_BIN_DIR:-$HOME/.local/bin}"
+LINK_PATH="$BIN_DIR/telecodexbot"
+INSTALL_LINK=1
+BOT_TOKEN=""
+CHAT_ID=""
+USER_ID=""
+USERNAME=""
+INTERACTIVE=1
+
+prompt_default() {
+  local label="$1"
+  local current="$2"
+  local reply
+  if [[ -n "$current" ]]; then
+    read -r -p "$label [$current]: " reply
+    printf '%s' "${reply:-$current}"
+  else
+    read -r -p "$label: " reply
+    printf '%s' "$reply"
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bin-dir)
+      BIN_DIR="$2"
+      LINK_PATH="$BIN_DIR/telecodexbot"
+      shift 2
+      ;;
+    --skip-link)
+      INSTALL_LINK=0
+      shift
+      ;;
+    --bot-token)
+      BOT_TOKEN="$2"
+      shift 2
+      ;;
+    --chat-id)
+      CHAT_ID="$2"
+      shift 2
+      ;;
+    --user-id)
+      USER_ID="$2"
+      shift 2
+      ;;
+    --username)
+      USERNAME="$2"
+      shift 2
+      ;;
+    --non-interactive)
+      INTERACTIVE=0
+      shift
+      ;;
+    *)
+      echo "argumento no reconocido: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
+  if [[ "$INSTALL_LINK" == "1" ]]; then
+    BIN_DIR="$(prompt_default 'Bin dir para el launcher' "$BIN_DIR")"
+    LINK_PATH="$BIN_DIR/telecodexbot"
+  fi
+  if [[ -z "$BOT_TOKEN" && -z "$CHAT_ID" && -z "$USER_ID" && -z "$USERNAME" ]]; then
+    read -r -p 'Queres inicializar la config global de Telegram ahora? [Y/n]: ' init_now
+    init_now="${init_now:-Y}"
+    case "$init_now" in
+      n|N)
+        ;;
+      *)
+        BOT_TOKEN="$(prompt_default 'Bot token' "$BOT_TOKEN")"
+        CHAT_ID="$(prompt_default 'Chat ID' "$CHAT_ID")"
+        USER_ID="$(prompt_default 'User ID' "$USER_ID")"
+        USERNAME="$(prompt_default 'Username (opcional)' "$USERNAME")"
+        ;;
+    esac
+  fi
+fi
+
+if [[ "$INSTALL_LINK" == "1" ]]; then
+  mkdir -p "$BIN_DIR"
+  ln -sfn "$APP_ROOT/bin/telecodexbot" "$LINK_PATH"
+fi
+
+if [[ -n "$BOT_TOKEN" || -n "$CHAT_ID" || -n "$USER_ID" || -n "$USERNAME" ]]; then
+  if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" || -z "$USER_ID" ]]; then
+    echo "para inicializar config necesitas bot token, chat id y user id" >&2
+    exit 1
+  fi
+  "$APP_ROOT/bin/telecodexbot" init-config \
+    --bot-token "$BOT_TOKEN" \
+    --chat-id "$CHAT_ID" \
+    --user-id "$USER_ID" \
+    --username "$USERNAME"
+fi
+
+printf 'telecodexbot instalado en %s\n' "$APP_ROOT"
+if [[ "$INSTALL_LINK" == "1" ]]; then
+  printf 'launcher=%s\n' "$LINK_PATH"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+      printf 'agrega a PATH si hace falta: export PATH="%s:$PATH"\n' "$BIN_DIR"
+      ;;
+  esac
+fi

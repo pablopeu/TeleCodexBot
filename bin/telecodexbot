@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE_DIR="$PWD"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace)
+      WORKSPACE_DIR="$2"
+      shift 2
+      ;;
+    --workspace=*)
+      WORKSPACE_DIR="${1#*=}"
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+cmd="${1:-help}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+export TELECODEXBOT_WORKSPACE_DIR="$WORKSPACE_DIR"
+
+bridge_py() {
+  python3 "$APP_ROOT/scripts/telecodexbot.py" "$@"
+}
+
+case "$cmd" in
+  up|start)
+    exec "$APP_ROOT/scripts/start_tmux.sh" "$@"
+    ;;
+  down|stop)
+    "$APP_ROOT/scripts/stop_relay.sh"
+    "$APP_ROOT/scripts/stop_webhook.sh"
+    ;;
+  relay-start)
+    exec "$APP_ROOT/scripts/start_relay.sh" "$@"
+    ;;
+  relay-stop)
+    exec "$APP_ROOT/scripts/stop_relay.sh" "$@"
+    ;;
+  webhook-start)
+    exec "$APP_ROOT/scripts/start_webhook.sh" "$@"
+    ;;
+  webhook-stop)
+    exec "$APP_ROOT/scripts/stop_webhook.sh" "$@"
+    ;;
+  logs)
+    source "$APP_ROOT/scripts/common.sh"
+    exec tail -f "$STATE_DIR/relay-daemon.log"
+    ;;
+  init-config|doctor|send|poll|ask|listen|inbox-next|webhook-serve|set-webhook|webhook-info|delete-webhook|ngrok-url|relay-daemon|sync-offset)
+    exec python3 "$APP_ROOT/scripts/telecodexbot.py" "$cmd" "$@"
+    ;;
+  help|-h|--help|"")
+    cat <<USAGE
+telecodexbot [--workspace DIR] <command> [args]
+
+Commands:
+  up | start         Arranca tmux + Codex + relay + webhook para el workspace
+  down | stop        Detiene relay y webhook del workspace
+  relay-start        Arranca solo el relay
+  relay-stop         Detiene solo el relay
+  webhook-start      Arranca solo el webhook/ngrok
+  webhook-stop       Detiene solo el webhook/ngrok
+  logs               Sigue el log del relay del workspace
+  init-config        Guarda bot_token/chat_id/user_id globales
+  doctor             Verifica conectividad Telegram
+  send               Envia un mensaje por Telegram
+  poll               Espera el siguiente mensaje de Telegram
+  ask                Envia pregunta y espera respuesta
+  inbox-next         Consume el siguiente mensaje ya recibido por webhook
+  webhook-info       Muestra webhook actual registrado en Telegram
+  sync-offset        Descarta updates viejos del bot
+
+Si no pasas --workspace, usa el directorio actual.
+USAGE
+    ;;
+  *)
+    exec python3 "$APP_ROOT/scripts/telecodexbot.py" "$cmd" "$@"
+    ;;
+esac
