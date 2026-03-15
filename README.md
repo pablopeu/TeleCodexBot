@@ -184,3 +184,8 @@ telecodexbot bot-info --bot-token '123456:ABC...'
 - Primero hay que abrir el bot en Telegram y tocar `Start`.
 - El relay detecta la sesion activa de Codex por `session_meta.cwd`, asi que el mirroring queda atado al workspace real.
 - El ingreso por Telegram usa `tmux send-keys -l` y la sesion de Codex arranca con `disable_paste_burst=true` para evitar prompts pegados que no se envian.
+
+## Troubleshooting rapido
+
+- Si Codex muestra un prompt tipo "Would you like to run ./telecodexbot send ...?", es una confirmacion de permisos del entorno de ejecucion (no es un error del bot). Podes aceptar y elegir "don't ask again" para ese prefijo.
+- Si aparece `Telegram URL error: [Errno -3] Temporary failure in name resolution`, la maquina no puede resolver `api.telegram.org` (problema DNS/red/proxy). Verificalo con `getent hosts api.telegram.org` o `curl https://api.telegram.org` y corrigi conectividad antes de reintentar.

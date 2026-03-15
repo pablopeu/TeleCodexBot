@@ -801,6 +801,9 @@ print_final_summary() {
     say "si tu shell nueva no ve Homebrew, ejecuta:"
     say "  eval \"\$(brew shellenv)\""
   fi
+  say
+  say "si Codex te pide confirmar './telecodexbot send ...', es un prompt de permisos del entorno; podes aprobarlo y marcar 'don't ask again' para ese prefijo."
+  say "si ves 'Telegram URL error: [Errno -3] Temporary failure in name resolution', revisa DNS/red/proxy (ej: getent hosts api.telegram.org o curl https://api.telegram.org)."
   say "siguiente paso: entra al repo donde quieras trabajar y corre 'telecodexbot up'"
 }
 
