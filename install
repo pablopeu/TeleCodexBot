@@ -40,6 +40,10 @@ say() {
   printf '%s\n' "$*"
 }
 
+step() {
+  printf '\n==> %s\n' "$*"
+}
+
 warn() {
   printf 'warning: %s\n' "$*" >&2
 }
@@ -80,6 +84,13 @@ ensure_path_dir() {
     *":$dir:"*) ;;
     *) export PATH="$dir:$PATH" ;;
   esac
+}
+
+warn_if_bin_dir_looks_like_repo() {
+  if [[ -d "$BIN_DIR/.git" ]]; then
+    warn "el bin dir elegido parece un repo Git ($BIN_DIR)."
+    warn "normalmente conviene usar ~/.local/bin para el launcher."
+  fi
 }
 
 prompt_default() {
@@ -816,11 +827,16 @@ if [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
     exit 0
   fi
   if [[ "$INSTALL_LINK" == "1" ]]; then
-    BIN_DIR="$(prompt_default 'Bin dir para el launcher' "$BIN_DIR")"
-    LINK_PATH="$BIN_DIR/telecodexbot"
+    if ! confirm "Usar bin dir por defecto para el launcher ($BIN_DIR)?" "Y"; then
+      BIN_DIR="$(prompt_default 'Bin dir para el launcher (NO es el repo donde vas a trabajar)' "$BIN_DIR")"
+      LINK_PATH="$BIN_DIR/telecodexbot"
+    fi
   fi
 fi
 
+warn_if_bin_dir_looks_like_repo
+
+step "Resolviendo dependencias del sistema"
 install_system_packages_if_needed
 brew_shellenv
 ensure_path_dir "$LOCAL_BIN_DIR"
@@ -832,15 +848,23 @@ command_exists python3 || die "python3 sigue sin estar disponible despues de ins
 command_exists curl || die "curl sigue sin estar disponible despues de instalar dependencias"
 command_exists tmux || die "tmux sigue sin estar disponible despues de instalar dependencias"
 
+step "Configurando launcher y herramientas base"
 ensure_launcher_link
 ensure_codex_installed
+
+step "Validando acceso a Codex"
 load_existing_config
 ensure_codex_login
+
+step "Preparando ngrok"
 ensure_ngrok_installed
 ensure_ngrok_authtoken
+
+step "Configurando Telegram"
 prepare_telegram_config
 
 if [[ "$RUN_SMOKE_TEST" == "1" ]]; then
+  step "Ejecutando verificacion final"
   run_smoke_tests
 fi
 

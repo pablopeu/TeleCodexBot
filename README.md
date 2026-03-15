@@ -84,6 +84,8 @@ Flags utiles de `./install`:
 
 Notas del setup:
 
+- En modo interactivo, el instalador te propone usar `~/.local/bin` para el launcher. Ese `bin dir` no es el repo donde vas a trabajar con Codex.
+- Si elegis un `bin dir` que parece un repo Git, el instalador lo advierte para evitar confusiones.
 - Durante la deteccion automatica de `chat_id` y `user_id`, el instalador borra temporalmente el webhook actual del bot para poder usar `getUpdates`.
 - Si haces `--skip-smoke-test`, el webhook queda sin registrar hasta el primer `telecodexbot up` o `telecodexbot webhook-start`.
 - En macOS sin Homebrew, el instalador intenta instalarlo para resolver dependencias.
