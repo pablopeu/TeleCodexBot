@@ -51,7 +51,14 @@ if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! is_running "$NGROK_PID_FILE"; then
+PUBLIC_URL=""
+# Reuse an already-running ngrok agent when possible to avoid endpoint conflicts.
+if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
+  PUBLIC_URL="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
+fi
+
+if [[ -z "$PUBLIC_URL" ]] && ! is_running "$NGROK_PID_FILE"; then
+  : >"$NGROK_LOG"
   NGROK_CMD=(ngrok http "http://$HOST:$PORT" --log=stdout)
   if ngrok_supports_web_addr_flag; then
     NGROK_CMD+=(--web-addr "$NGROK_WEB_ADDR")
@@ -63,17 +70,22 @@ if ! is_running "$NGROK_PID_FILE"; then
   started_ngrok=1
 fi
 
-PUBLIC_URL=""
-for _ in $(seq 1 30); do
-  if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
-    PUBLIC_URL="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
-    break
-  fi
-  sleep 1
-done
+if [[ -z "$PUBLIC_URL" ]]; then
+  for _ in $(seq 1 30); do
+    if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
+      PUBLIC_URL="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
+      break
+    fi
+    sleep 1
+  done
+fi
 
 if [[ -z "$PUBLIC_URL" ]]; then
   echo "ngrok no expuso una URL publica (api_url=$NGROK_API_URL)" >&2
+  if [[ -f "$NGROK_LOG" ]] && grep -q 'ERR_NGROK_334' "$NGROK_LOG"; then
+    echo "ngrok reporta endpoint ocupado (ERR_NGROK_334)." >&2
+    echo "si tenes otro ngrok activo, detenelo y reintenta (ej: pkill -x ngrok)." >&2
+  fi
   echo "revisar log: $NGROK_LOG" >&2
   if [[ -f "$NGROK_LOG" ]]; then
     echo "--- tail ngrok.log ---" >&2
