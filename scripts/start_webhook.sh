@@ -12,6 +12,7 @@ PORT="${TELECODEXBOT_WEBHOOK_PORT:-8765}"
 NGROK_WEB_ADDR="${TELECODEXBOT_NGROK_WEB_ADDR:-127.0.0.1:4040}"
 NGROK_API_URL="${TELECODEXBOT_NGROK_API_URL:-http://$NGROK_WEB_ADDR/api/tunnels}"
 NGROK_POOLING_ON_CONFLICT="${TELECODEXBOT_NGROK_POOLING_ON_CONFLICT:-1}"
+NGROK_ALT_URL_ON_CONFLICT="${TELECODEXBOT_NGROK_ALT_URL_ON_CONFLICT:-1}"
 ACK_TEXT="${TELECODEXBOT_WEBHOOK_ACK_TEXT:-Recibido. Lo sumo al inbox de TelecodexBot.}"
 NOTIFY_ON_START="${TELECODEXBOT_NOTIFY_WEBHOOK_START:-0}"
 
@@ -27,6 +28,10 @@ ngrok_supports_web_addr_flag() {
 
 ngrok_supports_pooling_flag() {
   ngrok http --help 2>/dev/null | grep -q -- '--pooling-enabled'
+}
+
+ngrok_supports_url_flag() {
+  ngrok http --help 2>/dev/null | grep -q -- '--url'
 }
 
 is_running() {
@@ -51,9 +56,13 @@ kill_from_file() {
 
 start_ngrok_agent() {
   local pooling_enabled="$1"
+  local alt_url="${2:-}"
   NGROK_CMD=(ngrok http "http://$HOST:$PORT" --log=stdout)
   if [[ "$pooling_enabled" == "1" ]]; then
     NGROK_CMD+=(--pooling-enabled)
+  fi
+  if [[ -n "$alt_url" ]]; then
+    NGROK_CMD+=(--url "$alt_url")
   fi
   if ngrok_supports_web_addr_flag; then
     NGROK_CMD+=(--web-addr "$NGROK_WEB_ADDR")
@@ -75,6 +84,12 @@ poll_public_url() {
     sleep 1
   done
   printf '%s' "$public_url"
+}
+
+generate_alt_ngrok_url() {
+  local suffix
+  suffix="$(printf '%s-%s' "$WORKSPACE_KEY" "$RANDOM" | tr -cd 'a-z0-9-' | cut -c1-40)"
+  printf 'https://telecodexbot-%s.ngrok-free.app' "$suffix"
 }
 
 if ! is_running "$SERVER_PID_FILE"; then
@@ -114,8 +129,28 @@ if [[ -z "$PUBLIC_URL" ]] && [[ "$started_ngrok" -eq 1 ]] && [[ "$NGROK_POOLING_
   if ngrok_supports_pooling_flag; then
     echo "info: reintentando ngrok con --pooling-enabled por conflicto ERR_NGROK_334" >>"$NGROK_LOG"
     kill_from_file "$NGROK_PID_FILE"
+    : >"$NGROK_LOG"
     start_ngrok_agent "1"
     PUBLIC_URL="$(poll_public_url)"
+  fi
+fi
+
+if [[ -z "$PUBLIC_URL" ]] && [[ "$started_ngrok" -eq 1 ]] && [[ "$NGROK_ALT_URL_ON_CONFLICT" == "1" ]] && [[ -f "$NGROK_LOG" ]] && grep -q 'ERR_NGROK_334' "$NGROK_LOG"; then
+  if ngrok_supports_url_flag; then
+    for _ in $(seq 1 3); do
+      ALT_URL="$(generate_alt_ngrok_url)"
+      echo "info: reintentando ngrok con URL alternativa $ALT_URL" >>"$NGROK_LOG"
+      kill_from_file "$NGROK_PID_FILE"
+      : >"$NGROK_LOG"
+      start_ngrok_agent "0" "$ALT_URL"
+      PUBLIC_URL="$(poll_public_url)"
+      if [[ -n "$PUBLIC_URL" ]]; then
+        break
+      fi
+      if [[ ! -f "$NGROK_LOG" ]] || ! grep -q 'ERR_NGROK_334' "$NGROK_LOG"; then
+        break
+      fi
+    done
   fi
 fi
 

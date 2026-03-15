@@ -167,6 +167,7 @@ telecodexbot bot-info --bot-token '123456:ABC...'
 - `TELECODEXBOT_WEBHOOK_PORT=8765`: cambia el puerto local del webhook.
 - `TELECODEXBOT_NGROK_WEB_ADDR=127.0.0.1:4040`: fija donde expone ngrok su API local para detectar la URL publica (solo en versiones que soportan `--web-addr`).
 - `TELECODEXBOT_NGROK_POOLING_ON_CONFLICT=1`: si ngrok responde `ERR_NGROK_334`, reintenta automaticamente con `--pooling-enabled`.
+- `TELECODEXBOT_NGROK_ALT_URL_ON_CONFLICT=1`: si persiste `ERR_NGROK_334`, intenta automaticamente una URL alternativa para obtener otro endpoint.
 
 ## Arquitectura
 
