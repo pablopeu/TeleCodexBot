@@ -20,6 +20,10 @@ ensure_cmd ngrok
 started_server=0
 started_ngrok=0
 
+ngrok_supports_web_addr_flag() {
+  ngrok http --help 2>/dev/null | grep -q -- '--web-addr'
+}
+
 is_running() {
   local pid_file="$1"
   [[ -f "$pid_file" ]] || return 1
@@ -48,7 +52,13 @@ if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
 fi
 
 if ! is_running "$NGROK_PID_FILE"; then
-  setsid ngrok http "http://$HOST:$PORT" --web-addr "$NGROK_WEB_ADDR" --log=stdout >>"$NGROK_LOG" 2>&1 </dev/null &
+  NGROK_CMD=(ngrok http "http://$HOST:$PORT" --log=stdout)
+  if ngrok_supports_web_addr_flag; then
+    NGROK_CMD+=(--web-addr "$NGROK_WEB_ADDR")
+  elif [[ -n "${TELECODEXBOT_NGROK_WEB_ADDR:-}" ]]; then
+    echo "warning: ngrok no soporta --web-addr, ignoro TELECODEXBOT_NGROK_WEB_ADDR=$TELECODEXBOT_NGROK_WEB_ADDR" >>"$NGROK_LOG"
+  fi
+  setsid "${NGROK_CMD[@]}" >>"$NGROK_LOG" 2>&1 </dev/null &
   echo $! > "$NGROK_PID_FILE"
   started_ngrok=1
 fi
