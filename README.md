@@ -89,6 +89,7 @@ Notas del setup:
 - Durante la deteccion automatica de `chat_id` y `user_id`, el instalador borra temporalmente el webhook actual del bot para poder usar `getUpdates`.
 - Si haces `--skip-smoke-test`, el webhook queda sin registrar hasta el primer `telecodexbot up` o `telecodexbot webhook-start`.
 - En macOS sin Homebrew, el instalador intenta instalarlo para resolver dependencias.
+- Si ngrok devuelve `ERR_NGROK_334`, significa que ese dominio/endpoint ya esta activo en otro lado (por ejemplo otra computadora): para continuar, para esa instancia o usa otra cuenta de ngrok para obtener otro dominio.
 
 ## Uso basico
 
