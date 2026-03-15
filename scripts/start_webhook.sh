@@ -9,6 +9,8 @@ NGROK_LOG="$STATE_DIR/ngrok.log"
 LAST_WEBHOOK_URL_FILE="$STATE_DIR/last-webhook-url.txt"
 HOST="${TELECODEXBOT_WEBHOOK_HOST:-127.0.0.1}"
 PORT="${TELECODEXBOT_WEBHOOK_PORT:-8765}"
+NGROK_WEB_ADDR="${TELECODEXBOT_NGROK_WEB_ADDR:-127.0.0.1:4040}"
+NGROK_API_URL="${TELECODEXBOT_NGROK_API_URL:-http://$NGROK_WEB_ADDR/api/tunnels}"
 ACK_TEXT="${TELECODEXBOT_WEBHOOK_ACK_TEXT:-Recibido. Lo sumo al inbox de TelecodexBot.}"
 NOTIFY_ON_START="${TELECODEXBOT_NOTIFY_WEBHOOK_START:-0}"
 
@@ -46,14 +48,14 @@ if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
 fi
 
 if ! is_running "$NGROK_PID_FILE"; then
-  setsid ngrok http "http://$HOST:$PORT" --log=stdout >>"$NGROK_LOG" 2>&1 </dev/null &
+  setsid ngrok http "http://$HOST:$PORT" --web-addr "$NGROK_WEB_ADDR" --log=stdout >>"$NGROK_LOG" 2>&1 </dev/null &
   echo $! > "$NGROK_PID_FILE"
   started_ngrok=1
 fi
 
 PUBLIC_URL=""
 for _ in $(seq 1 30); do
-  if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" 2>/dev/null)"; then
+  if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
     PUBLIC_URL="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
     break
   fi
@@ -61,7 +63,12 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -z "$PUBLIC_URL" ]]; then
-  echo "ngrok no expuso una URL publica" >&2
+  echo "ngrok no expuso una URL publica (api_url=$NGROK_API_URL)" >&2
+  echo "revisar log: $NGROK_LOG" >&2
+  if [[ -f "$NGROK_LOG" ]]; then
+    echo "--- tail ngrok.log ---" >&2
+    tail -n 40 "$NGROK_LOG" >&2 || true
+  fi
   exit 1
 fi
 
@@ -78,6 +85,7 @@ fi
 
 printf 'webhook_url=%s\n' "$TARGET_WEBHOOK_URL"
 printf 'health_url=http://%s:%s/health\n' "$HOST" "$PORT"
+printf 'ngrok_api_url=%s\n' "$NGROK_API_URL"
 printf 'server_pid=%s\n' "$(cat "$SERVER_PID_FILE")"
 printf 'ngrok_pid=%s\n' "$(cat "$NGROK_PID_FILE")"
 printf 'workspace=%s\n' "$WORKSPACE_DIR"

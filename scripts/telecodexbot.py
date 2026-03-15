@@ -1293,7 +1293,7 @@ def command_delete_webhook(args):
 
 
 def command_ngrok_url(args):
-    payload = http_json_get("http://127.0.0.1:4040/api/tunnels", timeout=10)
+    payload = http_json_get(args.api_url, timeout=10)
     tunnels = payload.get("tunnels", [])
     for tunnel in tunnels:
         public_url = tunnel.get("public_url", "")
@@ -1388,6 +1388,10 @@ def build_parser():
 
     ngrok_url_cmd = sub.add_parser("ngrok-url", help="Read current ngrok public URL from local API")
     ngrok_url_cmd.add_argument("--port", type=int, default=0)
+    ngrok_url_cmd.add_argument(
+        "--api-url",
+        default=os.environ.get("TELECODEXBOT_NGROK_API_URL", "http://127.0.0.1:4040/api/tunnels"),
+    )
     ngrok_url_cmd.set_defaults(func=command_ngrok_url)
 
     relay_cmd = sub.add_parser(

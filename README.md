@@ -165,6 +165,7 @@ telecodexbot bot-info --bot-token '123456:ABC...'
 - `TELECODEXBOT_TMUX_TARGET=%3`: fija un pane de tmux explicito.
 - `TELECODEXBOT_NOTIFY_WEBHOOK_START=1`: manda aviso cuando arranca webhook/ngrok.
 - `TELECODEXBOT_WEBHOOK_PORT=8765`: cambia el puerto local del webhook.
+- `TELECODEXBOT_NGROK_WEB_ADDR=127.0.0.1:4040`: fija donde expone ngrok su API local para detectar la URL publica.
 
 ## Arquitectura
 
