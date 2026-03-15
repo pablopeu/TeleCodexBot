@@ -11,6 +11,7 @@ HOST="${TELECODEXBOT_WEBHOOK_HOST:-127.0.0.1}"
 PORT="${TELECODEXBOT_WEBHOOK_PORT:-8765}"
 NGROK_WEB_ADDR="${TELECODEXBOT_NGROK_WEB_ADDR:-127.0.0.1:4040}"
 NGROK_API_URL="${TELECODEXBOT_NGROK_API_URL:-http://$NGROK_WEB_ADDR/api/tunnels}"
+NGROK_POOLING_ON_CONFLICT="${TELECODEXBOT_NGROK_POOLING_ON_CONFLICT:-1}"
 ACK_TEXT="${TELECODEXBOT_WEBHOOK_ACK_TEXT:-Recibido. Lo sumo al inbox de TelecodexBot.}"
 NOTIFY_ON_START="${TELECODEXBOT_NOTIFY_WEBHOOK_START:-0}"
 
@@ -24,6 +25,10 @@ ngrok_supports_web_addr_flag() {
   ngrok http --help 2>/dev/null | grep -q -- '--web-addr'
 }
 
+ngrok_supports_pooling_flag() {
+  ngrok http --help 2>/dev/null | grep -q -- '--pooling-enabled'
+}
+
 is_running() {
   local pid_file="$1"
   [[ -f "$pid_file" ]] || return 1
@@ -31,6 +36,45 @@ is_running() {
   pid="$(cat "$pid_file" 2>/dev/null || true)"
   [[ -n "$pid" ]] || return 1
   kill -0 "$pid" 2>/dev/null
+}
+
+kill_from_file() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
+start_ngrok_agent() {
+  local pooling_enabled="$1"
+  NGROK_CMD=(ngrok http "http://$HOST:$PORT" --log=stdout)
+  if [[ "$pooling_enabled" == "1" ]]; then
+    NGROK_CMD+=(--pooling-enabled)
+  fi
+  if ngrok_supports_web_addr_flag; then
+    NGROK_CMD+=(--web-addr "$NGROK_WEB_ADDR")
+  elif [[ -n "${TELECODEXBOT_NGROK_WEB_ADDR:-}" ]]; then
+    echo "warning: ngrok no soporta --web-addr, ignoro TELECODEXBOT_NGROK_WEB_ADDR=$TELECODEXBOT_NGROK_WEB_ADDR" >>"$NGROK_LOG"
+  fi
+  setsid "${NGROK_CMD[@]}" >>"$NGROK_LOG" 2>&1 </dev/null &
+  echo $! > "$NGROK_PID_FILE"
+  started_ngrok=1
+}
+
+poll_public_url() {
+  local public_url=""
+  for _ in $(seq 1 30); do
+    if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
+      public_url="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
+      break
+    fi
+    sleep 1
+  done
+  printf '%s' "$public_url"
 }
 
 if ! is_running "$SERVER_PID_FILE"; then
@@ -59,25 +103,20 @@ fi
 
 if [[ -z "$PUBLIC_URL" ]] && ! is_running "$NGROK_PID_FILE"; then
   : >"$NGROK_LOG"
-  NGROK_CMD=(ngrok http "http://$HOST:$PORT" --log=stdout)
-  if ngrok_supports_web_addr_flag; then
-    NGROK_CMD+=(--web-addr "$NGROK_WEB_ADDR")
-  elif [[ -n "${TELECODEXBOT_NGROK_WEB_ADDR:-}" ]]; then
-    echo "warning: ngrok no soporta --web-addr, ignoro TELECODEXBOT_NGROK_WEB_ADDR=$TELECODEXBOT_NGROK_WEB_ADDR" >>"$NGROK_LOG"
-  fi
-  setsid "${NGROK_CMD[@]}" >>"$NGROK_LOG" 2>&1 </dev/null &
-  echo $! > "$NGROK_PID_FILE"
-  started_ngrok=1
+  start_ngrok_agent "0"
 fi
 
 if [[ -z "$PUBLIC_URL" ]]; then
-  for _ in $(seq 1 30); do
-    if PUBLIC_URL_JSON="$(bridge_py ngrok-url --port "$PORT" --api-url "$NGROK_API_URL" 2>/dev/null)"; then
-      PUBLIC_URL="$(printf '%s' "$PUBLIC_URL_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["public_url"])')"
-      break
-    fi
-    sleep 1
-  done
+  PUBLIC_URL="$(poll_public_url)"
+fi
+
+if [[ -z "$PUBLIC_URL" ]] && [[ "$started_ngrok" -eq 1 ]] && [[ "$NGROK_POOLING_ON_CONFLICT" == "1" ]] && [[ -f "$NGROK_LOG" ]] && grep -q 'ERR_NGROK_334' "$NGROK_LOG"; then
+  if ngrok_supports_pooling_flag; then
+    echo "info: reintentando ngrok con --pooling-enabled por conflicto ERR_NGROK_334" >>"$NGROK_LOG"
+    kill_from_file "$NGROK_PID_FILE"
+    start_ngrok_agent "1"
+    PUBLIC_URL="$(poll_public_url)"
+  fi
 fi
 
 if [[ -z "$PUBLIC_URL" ]]; then
