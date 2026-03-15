@@ -536,7 +536,15 @@ import json
 import sys
 
 key = sys.argv[1]
-payload = json.load(sys.stdin)
+raw = sys.stdin.read().strip()
+if not raw:
+    print("")
+    raise SystemExit(0)
+try:
+    payload = json.loads(raw)
+except Exception:
+    print("")
+    raise SystemExit(0)
 value = payload.get(key, "")
 if value is None:
     value = ""
@@ -594,9 +602,18 @@ validate_bot_token() {
     warn "$output"
     return 1
   fi
+  if [[ -z "$output" ]]; then
+    warn "bot-info devolvio salida vacia; no se puede validar el token"
+    return 1
+  fi
   BOT_INFO_JSON="$output"
   BOT_USERNAME_DETECTED="$(printf '%s' "$BOT_INFO_JSON" | json_field bot_username)"
   BOT_FIRST_NAME_DETECTED="$(printf '%s' "$BOT_INFO_JSON" | json_field bot_first_name)"
+  if [[ -z "$BOT_USERNAME_DETECTED" ]]; then
+    warn "no pude interpretar la respuesta de bot-info para validar el token"
+    warn "$BOT_INFO_JSON"
+    return 1
+  fi
   return 0
 }
 
@@ -672,6 +689,8 @@ prepare_telegram_config() {
     if [[ "$INTERACTIVE" != "1" || ! -t 0 ]]; then
       die "falta --bot-token y no hay una config valida para reutilizar"
     fi
+    say "La entrada del token es oculta por seguridad."
+    say "Tip de pegado: usa Ctrl+Shift+V o click derecho en terminal."
     say "Necesito el bot token de Telegram."
     say "Si todavia no creaste el bot:"
     say "1. Abri @BotFather"
@@ -684,6 +703,7 @@ prepare_telegram_config() {
 
   until validate_bot_token "$BOT_TOKEN"; do
     [[ "$INTERACTIVE" == "1" && -t 0 ]] || die "el bot token pasado no es valido"
+    say "No pude validar ese token. Revisa que no tenga espacios extra y reintentá."
     BOT_TOKEN="$(prompt_secret 'Bot token (reintentar)')"
   done
 
