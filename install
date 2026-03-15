@@ -377,7 +377,9 @@ install_system_packages_if_needed() {
 }
 
 ensure_launcher_link() {
-  [[ "$INSTALL_LINK" == "1" ]] || return
+  if [[ "$INSTALL_LINK" != "1" ]]; then
+    return 0
+  fi
   safe_mkdir_p "$BIN_DIR"
   safe_ln_sfn "$APP_ROOT/bin/telecodexbot" "$LINK_PATH"
 }
@@ -385,9 +387,15 @@ ensure_launcher_link() {
 link_tool_into_bin_dir() {
   local source_path="$1"
   local tool_name="$2"
-  [[ "$INSTALL_LINK" == "1" ]] || return
-  [[ -x "$source_path" ]] || return
-  [[ "$BIN_DIR" == "$LOCAL_BIN_DIR" ]] && return
+  if [[ "$INSTALL_LINK" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$source_path" ]]; then
+    return 0
+  fi
+  if [[ "$BIN_DIR" == "$LOCAL_BIN_DIR" ]]; then
+    return 0
+  fi
   safe_mkdir_p "$BIN_DIR"
   safe_ln_sfn "$source_path" "$BIN_DIR/$tool_name"
 }
@@ -539,7 +547,9 @@ PY
 load_existing_config() {
   local output key value
   EXISTING_CONFIG_PRESENT=0
-  [[ -f "$CONFIG_PATH" ]] || return
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    return 0
+  fi
   output="$(python3 - "$CONFIG_PATH" <<'PY'
 import json
 import sys
