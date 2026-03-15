@@ -221,6 +221,15 @@ def bootstrap_offset(token: str) -> int:
     return max(update["update_id"] for update in updates) + 1
 
 
+def delete_webhook_for_token(token: str, drop_pending: bool):
+    return api_request(
+        token,
+        "deleteWebhook",
+        {"drop_pending_updates": "true" if drop_pending else "false"},
+        timeout=20,
+    )
+
+
 def send_message(config, text: str):
     return api_request(
         config["bot_token"],
@@ -950,6 +959,85 @@ def command_init_config(args):
     )
 
 
+def command_bot_info(args):
+    me = api_request(args.bot_token, "getMe", timeout=20)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "bot_id": me.get("id", 0),
+                "bot_username": me.get("username", ""),
+                "bot_first_name": me.get("first_name", ""),
+                "bot": me,
+            },
+            ensure_ascii=True,
+        )
+    )
+
+
+def command_await_private_chat(args):
+    bot = api_request(args.bot_token, "getMe", timeout=20)
+    if args.clear_webhook:
+        delete_webhook_for_token(args.bot_token, args.drop_pending)
+
+    state = {"update_offset": 0}
+    if args.from_now:
+        state["update_offset"] = bootstrap_offset(args.bot_token)
+
+    match_text = (args.match_text or "").strip()
+    deadline = time.time() + args.timeout if args.timeout > 0 else None
+    while True:
+        timeout_sec = min(args.long_poll, 25)
+        if deadline is not None:
+            remaining = int(max(1, deadline - time.time()))
+            timeout_sec = min(timeout_sec, remaining)
+
+        updates = api_request(
+            args.bot_token,
+            "getUpdates",
+            {
+                "offset": str(state.get("update_offset", 0)),
+                "timeout": str(timeout_sec),
+            },
+            timeout=timeout_sec + 10,
+        )
+        next_offset = state.get("update_offset", 0)
+        for update in updates:
+            next_offset = max(next_offset, update["update_id"] + 1)
+            message = update.get("message") or {}
+            chat = message.get("chat") or {}
+            from_user = message.get("from") or {}
+            text = str(message.get("text") or "")
+            if str(chat.get("type", "")) != "private":
+                continue
+            if match_text and match_text not in text:
+                continue
+            state["update_offset"] = next_offset
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "bot_id": bot.get("id", 0),
+                        "bot_username": bot.get("username", ""),
+                        "bot_first_name": bot.get("first_name", ""),
+                        "chat_id": int(chat.get("id", 0) or 0),
+                        "user_id": int(from_user.get("id", 0) or 0),
+                        "username": from_user.get("username", ""),
+                        "first_name": from_user.get("first_name", ""),
+                        "last_name": from_user.get("last_name", ""),
+                        "chat_type": chat.get("type", ""),
+                        "message_text": text,
+                        "update_offset": state["update_offset"],
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            return
+        state["update_offset"] = next_offset
+        if deadline is not None and time.time() >= deadline:
+            raise SystemExit(124)
+
+
 def command_doctor(_args):
     config = load_config()
     state = load_state()
@@ -1198,12 +1286,7 @@ def command_webhook_info(_args):
 
 def command_delete_webhook(args):
     config = load_config()
-    result = api_request(
-        config["bot_token"],
-        "deleteWebhook",
-        {"drop_pending_updates": "true" if args.drop_pending else "false"},
-        timeout=20,
-    )
+    result = delete_webhook_for_token(config["bot_token"], args.drop_pending)
     config.pop("webhook_url", None)
     save_config(config)
     print(json.dumps({"ok": True, "result": result}, ensure_ascii=True))
@@ -1234,6 +1317,23 @@ def build_parser():
     init_cmd.add_argument("--user-id", required=True, type=int)
     init_cmd.add_argument("--username", default="")
     init_cmd.set_defaults(func=command_init_config)
+
+    bot_info_cmd = sub.add_parser("bot-info", help="Validate a Telegram bot token and show bot metadata")
+    bot_info_cmd.add_argument("--bot-token", required=True)
+    bot_info_cmd.set_defaults(func=command_bot_info)
+
+    await_private_chat_cmd = sub.add_parser(
+        "await-private-chat",
+        help="Wait for a matching private Telegram message using a bot token",
+    )
+    await_private_chat_cmd.add_argument("--bot-token", required=True)
+    await_private_chat_cmd.add_argument("--match-text", default="")
+    await_private_chat_cmd.add_argument("--timeout", type=int, default=180)
+    await_private_chat_cmd.add_argument("--long-poll", type=int, default=10)
+    await_private_chat_cmd.add_argument("--from-now", action="store_true")
+    await_private_chat_cmd.add_argument("--clear-webhook", action="store_true")
+    await_private_chat_cmd.add_argument("--drop-pending", action="store_true")
+    await_private_chat_cmd.set_defaults(func=command_await_private_chat)
 
     doctor_cmd = sub.add_parser("doctor", help="Check bot connectivity")
     doctor_cmd.set_defaults(func=command_doctor)

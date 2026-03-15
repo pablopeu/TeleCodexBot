@@ -55,7 +55,7 @@ case "$cmd" in
     source "$APP_ROOT/scripts/common.sh"
     exec tail -f "$STATE_DIR/relay-daemon.log"
     ;;
-  init-config|doctor|send|poll|ask|listen|inbox-next|webhook-serve|set-webhook|webhook-info|delete-webhook|ngrok-url|relay-daemon|sync-offset)
+  init-config|bot-info|await-private-chat|doctor|send|poll|ask|listen|inbox-next|webhook-serve|set-webhook|webhook-info|delete-webhook|ngrok-url|relay-daemon|sync-offset)
     exec python3 "$APP_ROOT/scripts/telecodexbot.py" "$cmd" "$@"
     ;;
   help|-h|--help|"")
@@ -71,6 +71,8 @@ Commands:
   webhook-stop       Detiene solo el webhook/ngrok
   logs               Sigue el log del relay del workspace
   init-config        Guarda bot_token/chat_id/user_id globales
+  bot-info           Valida un bot token y muestra metadata del bot
+  await-private-chat Espera un mensaje privado al bot y detecta chat_id/user_id
   doctor             Verifica conectividad Telegram
   send               Envia un mensaje por Telegram
   poll               Espera el siguiente mensaje de Telegram

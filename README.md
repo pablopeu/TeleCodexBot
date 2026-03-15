@@ -9,14 +9,24 @@ Hace cuatro cosas:
 - mete en la sesion actual los mensajes que llegan por Telegram;
 - mantiene config global del bot y estado separado por workspace.
 
-## Requisitos
+## Antes de correr `./install`
 
-- `codex`
-- `python3`
-- `tmux`
-- `curl`
-- `ngrok`
+Tene esto a mano:
+
+- Telegram abierto con acceso a `@BotFather`
+- un nombre visible y un username terminado en `bot` para crear el bot
+- acceso a tu cuenta de ngrok para copiar el authtoken
+- tu password de `sudo` si faltan paquetes del sistema
 - Linux/macOS con acceso a `~/.codex`
+
+El instalador resuelve automaticamente lo demas si falta:
+
+- `python3`
+- `curl`
+- `tmux`
+- `node`/`npm`
+- `codex`
+- `ngrok`
 
 ## Donde guarda datos
 
@@ -32,7 +42,15 @@ No escribe nada dentro del repo donde corre Codex.
 
 ## Instalacion
 
-Instala el launcher en `~/.local/bin` y, si queres, guarda la config del bot.
+El instalador:
+
+- instala dependencias faltantes;
+- instala `codex` y `ngrok` si no estan;
+- te guia para crear o reutilizar el bot de Telegram;
+- detecta `chat_id` y `user_id` automaticamente con un mensaje de prueba;
+- configura el authtoken de ngrok si hace falta;
+- te hace loguear en `codex` si todavia no esta autenticado;
+- corre una verificacion final de Telegram + webhook + ngrok.
 
 Modo interactivo:
 
@@ -49,8 +67,26 @@ cd /home/pablo/telecodexbot
   --bot-token 'TU_BOT_TOKEN' \
   --chat-id 123456789 \
   --user-id 123456789 \
-  --username '@tu_usuario'
+  --username '@tu_usuario' \
+  --ngrok-authtoken 'TU_NGROK_AUTHTOKEN'
 ```
+
+Si ya existe `~/.config/telecodexbot/config.json`, el instalador puede reutilizar esa config en vez de pedir todo de nuevo.
+
+Flags utiles de `./install`:
+
+- `--non-interactive`: exige que ya le pases por flags los datos necesarios o que exista una config reutilizable.
+- `--ngrok-authtoken ...`: evita que el instalador te lo pida en modo interactivo.
+- `--skip-smoke-test`: saltea la verificacion final de Telegram + webhook + ngrok.
+- `--skip-link`: no crea el launcher `telecodexbot` en tu bin dir.
+- `--bin-dir ...`: cambia donde se crea el launcher.
+- `--telegram-timeout ...`: cambia el timeout para detectar el mensaje de bootstrap del bot.
+
+Notas del setup:
+
+- Durante la deteccion automatica de `chat_id` y `user_id`, el instalador borra temporalmente el webhook actual del bot para poder usar `getUpdates`.
+- Si haces `--skip-smoke-test`, el webhook queda sin registrar hasta el primer `telecodexbot up` o `telecodexbot webhook-start`.
+- En macOS sin Homebrew, el instalador intenta instalarlo para resolver dependencias.
 
 ## Uso basico
 
@@ -111,6 +147,12 @@ Consumir el siguiente mensaje ya recibido por webhook:
 
 ```bash
 telecodexbot inbox-next
+```
+
+Validar un bot token:
+
+```bash
+telecodexbot bot-info --bot-token '123456:ABC...'
 ```
 
 ## Variables de entorno utiles

@@ -2,14 +2,85 @@
 set -euo pipefail
 
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="${TELECODEXBOT_INSTALL_BIN_DIR:-$HOME/.local/bin}"
+LOCAL_PREFIX="${TELECODEXBOT_INSTALL_PREFIX:-$HOME/.local}"
+LOCAL_BIN_DIR="${LOCAL_PREFIX}/bin"
+BIN_DIR="${TELECODEXBOT_INSTALL_BIN_DIR:-$LOCAL_BIN_DIR}"
 LINK_PATH="$BIN_DIR/telecodexbot"
+CONFIG_HOME="${TELECODEXBOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/telecodexbot}"
+CONFIG_PATH="$CONFIG_HOME/config.json"
+
 INSTALL_LINK=1
+INTERACTIVE=1
+RUN_SMOKE_TEST=1
+TELEGRAM_TIMEOUT=180
+
 BOT_TOKEN=""
 CHAT_ID=""
 USER_ID=""
 USERNAME=""
-INTERACTIVE=1
+NGROK_AUTHTOKEN=""
+
+EXISTING_CONFIG_PRESENT=0
+EXISTING_BOT_TOKEN=""
+EXISTING_CHAT_ID=""
+EXISTING_USER_ID=""
+EXISTING_USERNAME=""
+EXISTING_WEBHOOK_URL=""
+
+PLATFORM=""
+ARCH=""
+PACKAGE_MANAGER=""
+HOMEBREW_INSTALLED=0
+WEBHOOK_STARTED=0
+BOOTSTRAP_CLEARED_WEBHOOK=0
+PATH_HINTS=()
+ORIGINAL_PATH=":$PATH:"
+
+say() {
+  printf '%s\n' "$*"
+}
+
+warn() {
+  printf 'warning: %s\n' "$*" >&2
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup() {
+  if [[ "$WEBHOOK_STARTED" == "1" ]]; then
+    "$APP_ROOT/bin/telecodexbot" --workspace "$APP_ROOT" webhook-stop >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+remember_path_hint() {
+  local dir="$1"
+  local entry
+  case "$ORIGINAL_PATH" in
+    *":$dir:"*) return ;;
+  esac
+  for entry in "${PATH_HINTS[@]:-}"; do
+    [[ "$entry" == "$dir" ]] && return
+  done
+  PATH_HINTS+=("$dir")
+}
+
+ensure_path_dir() {
+  local dir="$1"
+  [[ -n "$dir" ]] || return
+  remember_path_hint "$dir"
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *) export PATH="$dir:$PATH" ;;
+  esac
+}
 
 prompt_default() {
   local label="$1"
@@ -22,6 +93,669 @@ prompt_default() {
     read -r -p "$label: " reply
     printf '%s' "$reply"
   fi
+}
+
+prompt_secret() {
+  local label="$1"
+  local reply
+  read -r -s -p "$label: " reply
+  printf '\n' >&2
+  printf '%s' "$reply"
+}
+
+confirm() {
+  local prompt="$1"
+  local default="${2:-Y}"
+  local reply=""
+  local effective_default="$default"
+  if [[ "$INTERACTIVE" != "1" || ! -t 0 ]]; then
+    [[ "$effective_default" =~ ^[Yy]$ ]]
+    return
+  fi
+  if [[ "$effective_default" =~ ^[Yy]$ ]]; then
+    read -r -p "$prompt [Y/n]: " reply
+    case "${reply:-Y}" in
+      y|Y|yes|YES|"") return 0 ;;
+      *) return 1 ;;
+    esac
+  else
+    read -r -p "$prompt [y/N]: " reply
+    case "${reply:-N}" in
+      y|Y|yes|YES) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+safe_mkdir_p() {
+  local dir="$1"
+  if mkdir -p "$dir" 2>/dev/null; then
+    return
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    mkdir -p "$dir"
+    return
+  fi
+  command_exists sudo || die "no pude crear $dir y no hay sudo disponible"
+  sudo mkdir -p "$dir"
+}
+
+safe_ln_sfn() {
+  local target="$1"
+  local link_path="$2"
+  if ln -sfn "$target" "$link_path" 2>/dev/null; then
+    return
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    ln -sfn "$target" "$link_path"
+    return
+  fi
+  command_exists sudo || die "no pude crear el link $link_path y no hay sudo disponible"
+  sudo ln -sfn "$target" "$link_path"
+}
+
+append_unique() {
+  local item="$1"
+  local current
+  for current in "${SYSTEM_PACKAGES[@]:-}"; do
+    [[ "$current" == "$item" ]] && return
+  done
+  SYSTEM_PACKAGES+=("$item")
+}
+
+run_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  else
+    command_exists sudo || die "hace falta sudo para ejecutar: $*"
+    sudo "$@"
+  fi
+}
+
+ensure_platform() {
+  case "$(uname -s)" in
+    Linux) PLATFORM="linux" ;;
+    Darwin) PLATFORM="darwin" ;;
+    *) die "plataforma no soportada: $(uname -s). Este instalador soporta Linux y macOS." ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH="amd64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+    *) die "arquitectura no soportada: $(uname -m)" ;;
+  esac
+}
+
+detect_package_manager() {
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    if command_exists brew; then
+      PACKAGE_MANAGER="brew"
+    else
+      PACKAGE_MANAGER="brew-missing"
+    fi
+    return
+  fi
+  if command_exists apt-get; then
+    PACKAGE_MANAGER="apt"
+  elif command_exists dnf; then
+    PACKAGE_MANAGER="dnf"
+  elif command_exists yum; then
+    PACKAGE_MANAGER="yum"
+  elif command_exists pacman; then
+    PACKAGE_MANAGER="pacman"
+  elif command_exists zypper; then
+    PACKAGE_MANAGER="zypper"
+  elif command_exists apk; then
+    PACKAGE_MANAGER="apk"
+  else
+    PACKAGE_MANAGER=""
+  fi
+}
+
+brew_shellenv() {
+  if command_exists brew; then
+    eval "$(brew shellenv)"
+    return
+  fi
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    return
+  fi
+  if [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+    return
+  fi
+}
+
+install_homebrew() {
+  local curl_bin="curl"
+  command_exists /bin/bash || die "no encontre /bin/bash para instalar Homebrew"
+  if command_exists brew; then
+    brew_shellenv
+    return
+  fi
+  if ! command_exists curl && [[ ! -x /usr/bin/curl ]]; then
+    die "macOS sin Homebrew requiere curl para instalar dependencias"
+  fi
+  if ! command_exists curl && [[ -x /usr/bin/curl ]]; then
+    curl_bin="/usr/bin/curl"
+  fi
+  say "Instalando Homebrew para poder resolver python3/tmux/node en macOS..."
+  NONINTERACTIVE=1 /bin/bash -c "$("$curl_bin" -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  HOMEBREW_INSTALLED=1
+  brew_shellenv
+  command_exists brew || die "Homebrew no quedo disponible en PATH"
+}
+
+map_package_name() {
+  local logical="$1"
+  case "$PACKAGE_MANAGER:$logical" in
+    apt:python3) printf 'python3' ;;
+    apt:curl) printf 'curl' ;;
+    apt:tmux) printf 'tmux' ;;
+    apt:nodejs) printf 'nodejs' ;;
+    apt:npm) printf 'npm' ;;
+    dnf:python3) printf 'python3' ;;
+    dnf:curl) printf 'curl' ;;
+    dnf:tmux) printf 'tmux' ;;
+    dnf:nodejs) printf 'nodejs' ;;
+    dnf:npm) printf 'npm' ;;
+    yum:python3) printf 'python3' ;;
+    yum:curl) printf 'curl' ;;
+    yum:tmux) printf 'tmux' ;;
+    yum:nodejs) printf 'nodejs' ;;
+    yum:npm) printf 'npm' ;;
+    pacman:python3) printf 'python' ;;
+    pacman:curl) printf 'curl' ;;
+    pacman:tmux) printf 'tmux' ;;
+    pacman:nodejs) printf 'nodejs' ;;
+    pacman:npm) printf 'npm' ;;
+    zypper:python3) printf 'python3' ;;
+    zypper:curl) printf 'curl' ;;
+    zypper:tmux) printf 'tmux' ;;
+    zypper:nodejs) printf 'nodejs' ;;
+    zypper:npm) printf 'npm' ;;
+    apk:python3) printf 'python3' ;;
+    apk:curl) printf 'curl' ;;
+    apk:tmux) printf 'tmux' ;;
+    apk:nodejs) printf 'nodejs' ;;
+    apk:npm) printf 'npm' ;;
+    brew:python3) printf 'python' ;;
+    brew:curl) printf 'curl' ;;
+    brew:tmux) printf 'tmux' ;;
+    brew:nodejs) printf 'node' ;;
+    brew:npm) printf 'node' ;;
+    *) die "no se como mapear el paquete '$logical' para '$PACKAGE_MANAGER'" ;;
+  esac
+}
+
+queue_package() {
+  local logical="$1"
+  append_unique "$(map_package_name "$logical")"
+}
+
+install_system_packages_if_needed() {
+  SYSTEM_PACKAGES=()
+  detect_package_manager
+
+  if ! command_exists python3; then
+    queue_package python3
+  fi
+  if ! command_exists curl; then
+    queue_package curl
+  fi
+  if ! command_exists tmux; then
+    queue_package tmux
+  fi
+  if ! command_exists codex; then
+    if ! command_exists node; then
+      queue_package nodejs
+    fi
+    if ! command_exists npm; then
+      queue_package npm
+    fi
+  fi
+
+  if [[ "${#SYSTEM_PACKAGES[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  if [[ "$PACKAGE_MANAGER" == "brew-missing" ]]; then
+    install_homebrew
+    PACKAGE_MANAGER="brew"
+  fi
+  [[ -n "$PACKAGE_MANAGER" ]] || die "no encontre un gestor de paquetes soportado para instalar dependencias del sistema"
+
+  say "Voy a instalar dependencias faltantes del sistema: ${SYSTEM_PACKAGES[*]}"
+  if [[ "$PACKAGE_MANAGER" != "brew" && "$(id -u)" -ne 0 ]]; then
+    say "El sistema va a pedir sudo para instalar esos paquetes."
+    run_root true
+  fi
+
+  case "$PACKAGE_MANAGER" in
+    apt)
+      run_root apt-get update
+      run_root apt-get install -y "${SYSTEM_PACKAGES[@]}"
+      ;;
+    dnf)
+      run_root dnf install -y "${SYSTEM_PACKAGES[@]}"
+      ;;
+    yum)
+      run_root yum install -y "${SYSTEM_PACKAGES[@]}"
+      ;;
+    pacman)
+      run_root pacman -Sy --noconfirm "${SYSTEM_PACKAGES[@]}"
+      ;;
+    zypper)
+      run_root zypper --non-interactive install "${SYSTEM_PACKAGES[@]}"
+      ;;
+    apk)
+      run_root apk add --no-cache "${SYSTEM_PACKAGES[@]}"
+      ;;
+    brew)
+      brew install "${SYSTEM_PACKAGES[@]}"
+      ;;
+    *)
+      die "gestor de paquetes no soportado: $PACKAGE_MANAGER"
+      ;;
+  esac
+
+  hash -r
+  brew_shellenv
+  ensure_path_dir "$LOCAL_BIN_DIR"
+  ensure_path_dir "$BIN_DIR"
+}
+
+ensure_launcher_link() {
+  [[ "$INSTALL_LINK" == "1" ]] || return
+  safe_mkdir_p "$BIN_DIR"
+  safe_ln_sfn "$APP_ROOT/bin/telecodexbot" "$LINK_PATH"
+}
+
+link_tool_into_bin_dir() {
+  local source_path="$1"
+  local tool_name="$2"
+  [[ "$INSTALL_LINK" == "1" ]] || return
+  [[ -x "$source_path" ]] || return
+  [[ "$BIN_DIR" == "$LOCAL_BIN_DIR" ]] && return
+  safe_mkdir_p "$BIN_DIR"
+  safe_ln_sfn "$source_path" "$BIN_DIR/$tool_name"
+}
+
+ensure_codex_installed() {
+  if command_exists codex; then
+    return
+  fi
+  command_exists npm || die "falta npm para instalar Codex CLI"
+  safe_mkdir_p "$LOCAL_BIN_DIR"
+  say "Instalando Codex CLI en $LOCAL_PREFIX ..."
+  npm install -g @openai/codex --prefix "$LOCAL_PREFIX"
+  ensure_path_dir "$LOCAL_BIN_DIR"
+  hash -r
+  [[ -x "$LOCAL_BIN_DIR/codex" ]] || die "no aparecio $LOCAL_BIN_DIR/codex despues de instalar Codex CLI"
+  link_tool_into_bin_dir "$LOCAL_BIN_DIR/codex" codex
+  command_exists codex || die "Codex CLI sigue sin quedar disponible en PATH"
+}
+
+codex_login_status() {
+  codex login status 2>&1 || true
+}
+
+codex_logged_in() {
+  local status_text
+  status_text="$(codex_login_status)"
+  [[ "$status_text" == *"Logged in"* ]]
+}
+
+ensure_codex_login() {
+  local api_key
+  if codex_logged_in; then
+    return
+  fi
+  say "Codex CLI no tiene una sesion iniciada."
+
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    say "Voy a usar OPENAI_API_KEY del entorno para autenticar Codex."
+    printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+  elif [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
+    if confirm "Preferis pegar un OpenAI API key en vez de hacer login interactivo de Codex?" "N"; then
+      api_key="$(prompt_secret 'OPENAI_API_KEY')"
+      [[ -n "$api_key" ]] || die "necesito un API key no vacio para autenticar Codex"
+      printf '%s' "$api_key" | codex login --with-api-key
+    else
+      say "Voy a abrir el flujo interactivo de 'codex login'."
+      codex login
+    fi
+  else
+    die "Codex no esta autenticado. En modo no interactivo exporta OPENAI_API_KEY o preautentica 'codex login'."
+  fi
+
+  codex_logged_in || die "Codex CLI sigue sin quedar autenticado despues del login"
+}
+
+ngrok_download_url() {
+  case "$PLATFORM:$ARCH" in
+    linux:amd64) printf 'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz' ;;
+    linux:arm64) printf 'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz' ;;
+    *) die "no tengo una URL de descarga automatica para ngrok en $PLATFORM/$ARCH" ;;
+  esac
+}
+
+install_ngrok_linux() {
+  local url tmp_dir archive
+  url="$(ngrok_download_url)"
+  tmp_dir="$(mktemp -d)"
+  archive="$tmp_dir/ngrok.tgz"
+  curl -fsSL "$url" -o "$archive"
+  tar -xzf "$archive" -C "$tmp_dir"
+  safe_mkdir_p "$LOCAL_BIN_DIR"
+  cp "$tmp_dir/ngrok" "$LOCAL_BIN_DIR/ngrok"
+  chmod +x "$LOCAL_BIN_DIR/ngrok"
+  rm -rf "$tmp_dir"
+  link_tool_into_bin_dir "$LOCAL_BIN_DIR/ngrok" ngrok
+}
+
+ensure_ngrok_installed() {
+  if command_exists ngrok; then
+    return
+  fi
+  say "Instalando ngrok..."
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    detect_package_manager
+    if [[ "$PACKAGE_MANAGER" == "brew-missing" ]]; then
+      install_homebrew
+      PACKAGE_MANAGER="brew"
+    fi
+    brew install ngrok/ngrok/ngrok || brew install ngrok
+    brew_shellenv
+  else
+    install_ngrok_linux
+  fi
+  hash -r
+  command_exists ngrok || die "ngrok no quedo disponible en PATH"
+}
+
+ngrok_config_path() {
+  local line
+  line="$(ngrok config check 2>/dev/null | sed -n 's/^Valid configuration file at //p' | head -n 1 || true)"
+  printf '%s' "$line"
+}
+
+ngrok_has_authtoken() {
+  local cfg
+  cfg="$(ngrok_config_path)"
+  [[ -n "$cfg" && -f "$cfg" ]] || return 1
+  grep -Eq '^[[:space:]]*authtoken:[[:space:]]*[^[:space:]]+' "$cfg"
+}
+
+ensure_ngrok_authtoken() {
+  local token=""
+  if [[ -n "$NGROK_AUTHTOKEN" ]]; then
+    token="$NGROK_AUTHTOKEN"
+  elif ngrok_has_authtoken; then
+    return
+  elif [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
+    say "ngrok necesita un authtoken para poder exponer el webhook."
+    say "Tene a mano tu cuenta de ngrok y copiá el authtoken desde https://dashboard.ngrok.com/get-started/your-authtoken"
+    token="$(prompt_secret 'Ngrok authtoken')"
+  else
+    die "ngrok no tiene authtoken configurado. Pasalo con --ngrok-authtoken o configuralo antes."
+  fi
+
+  [[ -n "$token" ]] || die "el authtoken de ngrok no puede quedar vacio"
+  ngrok config add-authtoken "$token" >/dev/null
+  ngrok_has_authtoken || die "ngrok no guardo el authtoken correctamente"
+}
+
+telecodex() {
+  "$APP_ROOT/bin/telecodexbot" --workspace "$APP_ROOT" "$@"
+}
+
+json_field() {
+  local key="$1"
+  python3 - "$key" <<'PY'
+import json
+import sys
+
+key = sys.argv[1]
+payload = json.load(sys.stdin)
+value = payload.get(key, "")
+if value is None:
+    value = ""
+print(value)
+PY
+}
+
+load_existing_config() {
+  local output key value
+  EXISTING_CONFIG_PRESENT=0
+  [[ -f "$CONFIG_PATH" ]] || return
+  output="$(python3 - "$CONFIG_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+for key in ("bot_token", "chat_id", "user_id", "username", "webhook_url"):
+    value = data.get(key, "")
+    print(f"{key}\t{value}")
+PY
+)" || {
+    warn "ignoro $CONFIG_PATH porque no lo pude parsear como JSON"
+    return
+  }
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      bot_token) EXISTING_BOT_TOKEN="$value" ;;
+      chat_id) EXISTING_CHAT_ID="$value" ;;
+      user_id) EXISTING_USER_ID="$value" ;;
+      username) EXISTING_USERNAME="$value" ;;
+      webhook_url) EXISTING_WEBHOOK_URL="$value" ;;
+    esac
+  done <<< "$output"
+  if [[ -n "$EXISTING_BOT_TOKEN" && -n "$EXISTING_CHAT_ID" && -n "$EXISTING_USER_ID" ]]; then
+    EXISTING_CONFIG_PRESENT=1
+  fi
+}
+
+validate_bot_token() {
+  local candidate="$1"
+  local output status
+  set +e
+  output="$(telecodex bot-info --bot-token "$candidate" 2>&1)"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    warn "$output"
+    return 1
+  fi
+  BOT_INFO_JSON="$output"
+  BOT_USERNAME_DETECTED="$(printf '%s' "$BOT_INFO_JSON" | json_field bot_username)"
+  BOT_FIRST_NAME_DETECTED="$(printf '%s' "$BOT_INFO_JSON" | json_field bot_first_name)"
+  return 0
+}
+
+bootstrap_private_chat() {
+  local bootstrap_code output status detected_username
+  while :; do
+    bootstrap_code="telecodexbot-setup-$(date +%s)-$RANDOM"
+    say "Voy a detectar tu chat_id y user_id automaticamente."
+    say "Se va a borrar temporalmente cualquier webhook activo del bot para poder usar getUpdates durante el bootstrap."
+    say "Abri @${BOT_USERNAME_DETECTED} en Telegram, toca Start si hace falta y mandale exactamente este texto:"
+    printf '  %s\n' "$bootstrap_code"
+
+    set +e
+    BOOTSTRAP_CLEARED_WEBHOOK=1
+    output="$(telecodex await-private-chat \
+      --bot-token "$BOT_TOKEN" \
+      --match-text "$bootstrap_code" \
+      --timeout "$TELEGRAM_TIMEOUT" \
+      --long-poll 10 \
+      --from-now \
+      --clear-webhook \
+      --drop-pending 2>&1)"
+    status=$?
+    set -e
+
+    if [[ "$status" -eq 0 ]]; then
+      CHAT_ID="$(printf '%s' "$output" | json_field chat_id)"
+      USER_ID="$(printf '%s' "$output" | json_field user_id)"
+      detected_username="$(printf '%s' "$output" | json_field username)"
+      if [[ -z "$USERNAME" && -n "$detected_username" ]]; then
+        USERNAME="$detected_username"
+      fi
+      say "Detectado chat_id=$CHAT_ID user_id=$USER_ID${detected_username:+ username=@$detected_username}"
+      return
+    fi
+
+    if [[ "$status" -eq 124 ]]; then
+      warn "se agoto el tiempo esperando el mensaje de bootstrap"
+    else
+      warn "$output"
+    fi
+
+    if [[ "$INTERACTIVE" == "1" && -t 0 ]] && confirm "Queres reintentar la deteccion automatica del chat?" "Y"; then
+      continue
+    fi
+    die "no pude detectar chat_id/user_id automaticamente"
+  done
+}
+
+prepare_telegram_config() {
+  if [[ -z "$BOT_TOKEN" && "$EXISTING_CONFIG_PRESENT" == "1" ]]; then
+    if validate_bot_token "$EXISTING_BOT_TOKEN"; then
+      say "Encontre una config existente en $CONFIG_PATH para chat_id=$EXISTING_CHAT_ID user_id=$EXISTING_USER_ID."
+      if [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
+        if confirm "Queres reutilizar esa config de Telegram?" "Y"; then
+          BOT_TOKEN="$EXISTING_BOT_TOKEN"
+          CHAT_ID="$EXISTING_CHAT_ID"
+          USER_ID="$EXISTING_USER_ID"
+          USERNAME="$EXISTING_USERNAME"
+        fi
+      else
+        BOT_TOKEN="$EXISTING_BOT_TOKEN"
+        CHAT_ID="$EXISTING_CHAT_ID"
+        USER_ID="$EXISTING_USER_ID"
+        USERNAME="$EXISTING_USERNAME"
+      fi
+    else
+      warn "la config existente no paso la validacion del token; voy a pedir datos nuevos"
+    fi
+  fi
+
+  while [[ -z "$BOT_TOKEN" ]]; do
+    if [[ "$INTERACTIVE" != "1" || ! -t 0 ]]; then
+      die "falta --bot-token y no hay una config valida para reutilizar"
+    fi
+    say "Necesito el bot token de Telegram."
+    say "Si todavia no creaste el bot:"
+    say "1. Abri @BotFather"
+    say "2. Manda /newbot"
+    say "3. Elegi un nombre visible"
+    say "4. Elegi un username unico que termine en 'bot'"
+    say "5. Copia el token que te devuelve"
+    BOT_TOKEN="$(prompt_secret 'Bot token')"
+  done
+
+  until validate_bot_token "$BOT_TOKEN"; do
+    [[ "$INTERACTIVE" == "1" && -t 0 ]] || die "el bot token pasado no es valido"
+    BOT_TOKEN="$(prompt_secret 'Bot token (reintentar)')"
+  done
+
+  say "Bot validado: @${BOT_USERNAME_DETECTED}${BOT_FIRST_NAME_DETECTED:+ ($BOT_FIRST_NAME_DETECTED)}"
+
+  if [[ -z "$CHAT_ID" || -z "$USER_ID" ]]; then
+    if [[ "$INTERACTIVE" != "1" || ! -t 0 ]]; then
+      die "faltan --chat-id y/o --user-id. En modo no interactivo pasalos por flag o usa una config existente."
+    fi
+    bootstrap_private_chat
+  fi
+
+  telecodex init-config \
+    --bot-token "$BOT_TOKEN" \
+    --chat-id "$CHAT_ID" \
+    --user-id "$USER_ID" \
+    --username "$USERNAME" >/dev/null
+
+  if [[ "$BOOTSTRAP_CLEARED_WEBHOOK" == "1" && "$RUN_SMOKE_TEST" != "1" ]]; then
+    telecodex delete-webhook >/dev/null || true
+  fi
+}
+
+send_test_message() {
+  local host_name
+  host_name="$(hostname 2>/dev/null || echo this-host)"
+  telecodex send --text "TelecodexBot instalado correctamente en $host_name." >/dev/null
+}
+
+run_smoke_tests() {
+  local webhook_output webhook_url status
+  say "Corriendo verificacion final..."
+  telecodex doctor >/dev/null
+  send_test_message
+  WEBHOOK_STARTED=1
+  set +e
+  webhook_output="$(telecodex webhook-start 2>&1)"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    die "$webhook_output"
+  fi
+  webhook_url="$(printf '%s\n' "$webhook_output" | awk -F= '/^webhook_url=/{print $2}')"
+  [[ -n "$webhook_url" ]] || die "webhook-start no devolvio una URL publica"
+  say "Webhook validado en $webhook_url"
+  telecodex webhook-stop >/dev/null
+  WEBHOOK_STARTED=0
+}
+
+show_intro() {
+  say "Este instalador va a dejar TelecodexBot listo para usar con la menor edicion manual posible."
+  say
+  say "Va a hacer lo siguiente:"
+  say "- instalar automaticamente dependencias faltantes del sistema"
+  say "- instalar Codex CLI y ngrok si no estan"
+  say "- pedir sudo si el sistema necesita paquetes globales"
+  say "- guiarte para crear o reutilizar un bot de Telegram"
+  say "- pedir el bot token y detectar chat_id/user_id automaticamente con un mensaje de prueba"
+  say "- pedir el authtoken de ngrok si todavia no esta configurado"
+  say "- autenticar Codex si hace falta"
+  say "- correr una verificacion final con Telegram + webhook + ngrok"
+  say
+  say "Tene esto a mano antes de seguir:"
+  say "- Telegram abierto con acceso a @BotFather"
+  say "- un nombre visible y un username terminado en 'bot' para el bot"
+  say "- la cuenta de ngrok lista para copiar el authtoken"
+  say "- tu password de sudo si faltan paquetes del sistema"
+  say
+}
+
+print_final_summary() {
+  local codex_version ngrok_version
+  codex_version="$(codex --version 2>/dev/null | tail -n 1 || true)"
+  ngrok_version="$(ngrok version 2>/dev/null | tail -n 1 || true)"
+  say "TelecodexBot instalado en $APP_ROOT"
+  if [[ "$INSTALL_LINK" == "1" ]]; then
+    say "launcher=$LINK_PATH"
+  fi
+  [[ -n "$codex_version" ]] && say "codex=$codex_version"
+  [[ -n "$ngrok_version" ]] && say "ngrok=$ngrok_version"
+  say "config=$CONFIG_PATH"
+  if [[ "${#PATH_HINTS[@]}" -gt 0 ]]; then
+    say "agrega estas rutas a PATH si tu shell nueva no las trae:"
+    local dir
+    for dir in "${PATH_HINTS[@]}"; do
+      say "  export PATH=\"$dir:\$PATH\""
+    done
+  fi
+  if [[ "$HOMEBREW_INSTALLED" == "1" ]]; then
+    say "si tu shell nueva no ve Homebrew, ejecuta:"
+    say "  eval \"\$(brew shellenv)\""
+  fi
+  say "siguiente paso: entra al repo donde quieras trabajar y corre 'telecodexbot up'"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -51,62 +785,63 @@ while [[ $# -gt 0 ]]; do
       USERNAME="$2"
       shift 2
       ;;
+    --ngrok-authtoken)
+      NGROK_AUTHTOKEN="$2"
+      shift 2
+      ;;
+    --telegram-timeout)
+      TELEGRAM_TIMEOUT="$2"
+      shift 2
+      ;;
+    --skip-smoke-test)
+      RUN_SMOKE_TEST=0
+      shift
+      ;;
     --non-interactive)
       INTERACTIVE=0
       shift
       ;;
     *)
-      echo "argumento no reconocido: $1" >&2
-      exit 1
+      die "argumento no reconocido: $1"
       ;;
   esac
 done
 
+ensure_platform
+ensure_path_dir "$LOCAL_BIN_DIR"
+
 if [[ "$INTERACTIVE" == "1" && -t 0 ]]; then
+  show_intro
+  if ! confirm "Arranco la instalacion ahora?" "Y"; then
+    exit 0
+  fi
   if [[ "$INSTALL_LINK" == "1" ]]; then
     BIN_DIR="$(prompt_default 'Bin dir para el launcher' "$BIN_DIR")"
     LINK_PATH="$BIN_DIR/telecodexbot"
   fi
-  if [[ -z "$BOT_TOKEN" && -z "$CHAT_ID" && -z "$USER_ID" && -z "$USERNAME" ]]; then
-    read -r -p 'Queres inicializar la config global de Telegram ahora? [Y/n]: ' init_now
-    init_now="${init_now:-Y}"
-    case "$init_now" in
-      n|N)
-        ;;
-      *)
-        BOT_TOKEN="$(prompt_default 'Bot token' "$BOT_TOKEN")"
-        CHAT_ID="$(prompt_default 'Chat ID' "$CHAT_ID")"
-        USER_ID="$(prompt_default 'User ID' "$USER_ID")"
-        USERNAME="$(prompt_default 'Username (opcional)' "$USERNAME")"
-        ;;
-    esac
-  fi
 fi
 
+install_system_packages_if_needed
+brew_shellenv
+ensure_path_dir "$LOCAL_BIN_DIR"
 if [[ "$INSTALL_LINK" == "1" ]]; then
-  mkdir -p "$BIN_DIR"
-  ln -sfn "$APP_ROOT/bin/telecodexbot" "$LINK_PATH"
+  ensure_path_dir "$BIN_DIR"
 fi
 
-if [[ -n "$BOT_TOKEN" || -n "$CHAT_ID" || -n "$USER_ID" || -n "$USERNAME" ]]; then
-  if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" || -z "$USER_ID" ]]; then
-    echo "para inicializar config necesitas bot token, chat id y user id" >&2
-    exit 1
-  fi
-  "$APP_ROOT/bin/telecodexbot" init-config \
-    --bot-token "$BOT_TOKEN" \
-    --chat-id "$CHAT_ID" \
-    --user-id "$USER_ID" \
-    --username "$USERNAME"
+command_exists python3 || die "python3 sigue sin estar disponible despues de instalar dependencias"
+command_exists curl || die "curl sigue sin estar disponible despues de instalar dependencias"
+command_exists tmux || die "tmux sigue sin estar disponible despues de instalar dependencias"
+
+ensure_launcher_link
+ensure_codex_installed
+load_existing_config
+ensure_codex_login
+ensure_ngrok_installed
+ensure_ngrok_authtoken
+prepare_telegram_config
+
+if [[ "$RUN_SMOKE_TEST" == "1" ]]; then
+  run_smoke_tests
 fi
 
-printf 'telecodexbot instalado en %s\n' "$APP_ROOT"
-if [[ "$INSTALL_LINK" == "1" ]]; then
-  printf 'launcher=%s\n' "$LINK_PATH"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *)
-      printf 'agrega a PATH si hace falta: export PATH="%s:$PATH"\n' "$BIN_DIR"
-      ;;
-  esac
-fi
+print_final_summary
