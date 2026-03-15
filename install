@@ -106,6 +106,13 @@ prompt_default() {
   fi
 }
 
+prompt_text() {
+  local label="$1"
+  local reply
+  read -r -p "$label: " reply
+  printf '%s' "$reply"
+}
+
 prompt_secret() {
   local label="$1"
   local reply
@@ -531,7 +538,7 @@ telecodex() {
 
 json_field() {
   local key="$1"
-  python3 - "$key" <<'PY'
+  python3 -c '
 import json
 import sys
 
@@ -549,7 +556,7 @@ value = payload.get(key, "")
 if value is None:
     value = ""
 print(value)
-PY
+' "$key"
 }
 
 load_existing_config() {
@@ -689,8 +696,6 @@ prepare_telegram_config() {
     if [[ "$INTERACTIVE" != "1" || ! -t 0 ]]; then
       die "falta --bot-token y no hay una config valida para reutilizar"
     fi
-    say "La entrada del token es oculta por seguridad."
-    say "Tip de pegado: usa Ctrl+Shift+V o click derecho en terminal."
     say "Necesito el bot token de Telegram."
     say "Si todavia no creaste el bot:"
     say "1. Abri @BotFather"
@@ -698,13 +703,13 @@ prepare_telegram_config() {
     say "3. Elegi un nombre visible"
     say "4. Elegi un username unico que termine en 'bot'"
     say "5. Copia el token que te devuelve"
-    BOT_TOKEN="$(prompt_secret 'Bot token')"
+    BOT_TOKEN="$(prompt_text 'Bot token')"
   done
 
   until validate_bot_token "$BOT_TOKEN"; do
     [[ "$INTERACTIVE" == "1" && -t 0 ]] || die "el bot token pasado no es valido"
     say "No pude validar ese token. Revisa que no tenga espacios extra y reintentá."
-    BOT_TOKEN="$(prompt_secret 'Bot token (reintentar)')"
+    BOT_TOKEN="$(prompt_text 'Bot token (reintentar)')"
   done
 
   say "Bot validado: @${BOT_USERNAME_DETECTED}${BOT_FIRST_NAME_DETECTED:+ ($BOT_FIRST_NAME_DETECTED)}"
