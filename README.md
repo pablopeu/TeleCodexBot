@@ -164,6 +164,7 @@ telecodexbot bot-info --bot-token '123456:ABC...'
 - `TELECODEXBOT_ATTACH=0`: arranca todo pero no hace `tmux attach`.
 - `TELECODEXBOT_AUTONOMOUS=1`: habilita fallback por `codex exec resume` en vez de solo `tmux`.
 - `TELECODEXBOT_TMUX_TARGET=%3`: fija un pane de tmux explicito.
+- `TELECODEXBOT_TMUX_MOUSE=1`: fuerza `mouse on` en la sesion tmux de Codex (`0` para desactivarlo).
 - `TELECODEXBOT_NOTIFY_WEBHOOK_START=1`: manda aviso cuando arranca webhook/ngrok.
 - `TELECODEXBOT_WEBHOOK_PORT=8765`: cambia el puerto local del webhook.
 - `TELECODEXBOT_NGROK_WEB_ADDR=127.0.0.1:4040`: fija donde expone ngrok su API local para detectar la URL publica (solo en versiones que soportan `--web-addr`).

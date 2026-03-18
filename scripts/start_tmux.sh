@@ -8,6 +8,7 @@ WINDOW_NAME="${TELECODEXBOT_WINDOW_NAME:-codex}"
 CODEX_CMD="${TELECODEXBOT_CODEX_CMD:-$APP_ROOT/scripts/launch_codex.sh}"
 ATTACH_MODE="${TELECODEXBOT_ATTACH:-1}"
 STOP_SERVICE="${TELECODEXBOT_STOP_SERVICE:-1}"
+TMUX_MOUSE="${TELECODEXBOT_TMUX_MOUSE:-1}"
 
 ensure_cmd tmux
 if [[ -z "$CODEX_BIN" ]]; then
@@ -55,6 +56,11 @@ respawn_window() {
 }
 
 ensure_window
+if [[ "$TMUX_MOUSE" == "1" ]]; then
+  tmux set-option -t "$SESSION_NAME" -g mouse on >/dev/null
+else
+  tmux set-option -t "$SESSION_NAME" -g mouse off >/dev/null
+fi
 pane_id="$(resolve_pane_id)"
 if [[ -z "$pane_id" ]]; then
   respawn_window
