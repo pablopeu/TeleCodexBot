@@ -41,6 +41,12 @@ CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 CODEX_HISTORY_PATH = CODEX_HOME / "history.jsonl"
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 
+# Claude Code paths
+CLAUDE_HOME = Path(os.environ.get("CLAUDE_HOME", str(Path.home() / ".claude")))
+CLAUDE_HISTORY_PATH = CLAUDE_HOME / "history.jsonl"
+CLAUDE_PROJECTS_DIR = CLAUDE_HOME / "projects"
+CLAUDE_SESSIONS_DIR = CLAUDE_HOME / "sessions"
+
 try:
     import fcntl  # type: ignore
 except Exception:  # pragma: no cover
@@ -515,6 +521,173 @@ def extract_assistant_text(event):
     return "\n".join(chunks).strip(), str(payload.get("phase", "")).strip()
 
 
+# ---------------------------------------------------------------------------
+# Claude Code backend helpers
+# ---------------------------------------------------------------------------
+
+def claude_project_key(workspace: Path) -> str:
+    """Convert a workspace path to Claude Code's project directory name.
+
+    Claude Code encodes the absolute path replacing '/' with '-' and stripping
+    the leading separator, e.g. /home/pablo -> -home-pablo.
+    """
+    return str(workspace).replace("/", "-")
+
+
+def claude_conversation_dir(workspace: Path) -> Path:
+    """Return the Claude Code project directory for *workspace*."""
+    return CLAUDE_PROJECTS_DIR / claude_project_key(workspace)
+
+
+def latest_claude_session_id(workspace: Path) -> str:
+    """Find the most-recently-modified conversation for *workspace*."""
+    conv_dir = claude_conversation_dir(workspace)
+    if not conv_dir.exists():
+        return ""
+    best_mtime = -1.0
+    best_id = ""
+    for f in conv_dir.glob("*.jsonl"):
+        mtime = f.stat().st_mtime
+        if mtime > best_mtime:
+            best_mtime = mtime
+            best_id = f.stem  # UUID without .jsonl
+    return best_id
+
+
+def latest_claude_history_session_id(workspace: Path) -> str:
+    """Find the latest session ID from Claude history.jsonl for *workspace*."""
+    if not CLAUDE_HISTORY_PATH.exists():
+        return ""
+    target_project = str(workspace)
+    last_session_id = ""
+    with CLAUDE_HISTORY_PATH.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            project = str(row.get("project", "")).strip()
+            if project != target_project:
+                continue
+            sid = str(row.get("sessionId", "")).strip()
+            if sid:
+                last_session_id = sid
+    return last_session_id
+
+
+def find_claude_conversation_file(session_id: str, workspace: Path):
+    """Locate the conversation JSONL for a Claude Code session."""
+    if not session_id:
+        return None
+    conv_dir = claude_conversation_dir(workspace)
+    candidate = conv_dir / f"{session_id}.jsonl"
+    if candidate.exists():
+        return candidate
+    # Also try glob in case of subdirectories
+    for match in conv_dir.rglob(f"*{session_id}.jsonl"):
+        return match
+    return None
+
+
+def extract_claude_assistant_text(event):
+    """Extract assistant text from a Claude Code conversation event."""
+    if event.get("type") != "assistant":
+        return "", ""
+    msg = event.get("message") or {}
+    if msg.get("role") != "assistant":
+        return "", ""
+    content = msg.get("content") or []
+    chunks = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type", "")
+        if kind == "text":
+            text = str(item.get("text", "")).strip()
+            if text:
+                chunks.append(text)
+    if not chunks:
+        return "", ""
+    model = str(msg.get("model", "")).strip()
+    return "\n".join(chunks).strip(), model
+
+
+def extract_claude_user_text(event):
+    """Extract user text from a Claude Code conversation event."""
+    if event.get("type") != "user":
+        return ""
+    msg = event.get("message") or {}
+    if msg.get("role") != "user":
+        return ""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    chunks.append(text)
+        return "\n".join(chunks).strip()
+    return ""
+
+
+def run_claude_resume(session_id: str, prompt_text: str, claude_cmd: str, timeout_sec: int, detach: bool):
+    """Execute a Claude Code prompt continuing an existing session."""
+    cmd = [claude_cmd, "--resume", session_id, "--print"]
+    if detach:
+        log_path = CONFIG_DIR / "relay-claude-resume.log"
+        try:
+            with log_path.open("a", encoding="utf-8") as logfh:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(WORKSPACE_ROOT),
+                    stdin=subprocess.PIPE,
+                    stdout=logfh,
+                    stderr=logfh,
+                    text=True,
+                    start_new_session=True,
+                )
+                if proc.stdin is not None:
+                    proc.stdin.write(prompt_text + "\n")
+                    proc.stdin.close()
+            return True, f"spawned pid={proc.pid}"
+        except Exception as exc:
+            return False, f"fallo al lanzar claude resume: {exc}"
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(WORKSPACE_ROOT),
+            input=prompt_text + "\n",
+            capture_output=True,
+            text=True,
+            timeout=(timeout_sec if timeout_sec > 0 else None),
+            check=False,
+        )
+    except Exception as exc:
+        return False, f"fallo al ejecutar claude resume: {exc}"
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        stdout = (completed.stdout or "").strip()
+        detail = stderr or stdout or f"exit={completed.returncode}"
+        return False, detail[:2000]
+    return True, ""
+
+
+def detect_backend() -> str:
+    """Auto-detect whether to use 'codex' or 'claude' backend."""
+    import shutil
+    if shutil.which("codex"):
+        return "codex"
+    if shutil.which("claude"):
+        return "claude"
+    return "codex"
+
+
 def run_codex_resume(session_id: str, prompt_text: str, codex_cmd: str, timeout_sec: int, full_auto: bool, detach: bool):
     stamp = int(time.time() * 1000)
     out_path = CONFIG_DIR / f"relay-last-assistant-{stamp}.txt"
@@ -727,18 +900,45 @@ def command_relay_daemon(args):
     state = load_state()
     ensure_dir()
 
-    history_path = Path(args.history_path).expanduser()
-    session_id = (args.session_id or "").strip()
-    if not session_id:
-        session_id = latest_workspace_session_id(WORKSPACE_ROOT)
-    if not session_id:
-        session_id = latest_history_session_id(history_path)
-    if not session_id:
-        raise SystemExit("relay-daemon: no se pudo detectar session_id (usar --session-id)")
+    backend = (args.backend or "").strip()
+    if backend == "auto":
+        backend = detect_backend()
+    is_claude = backend == "claude"
 
-    session_file = find_session_file(session_id)
-    if session_file is None:
-        raise SystemExit(f"relay-daemon: no se encontró session file para {session_id}")
+    # Resolve defaults based on backend
+    if not args.codex_cmd:
+        args.codex_cmd = "claude" if is_claude else "codex"
+    if not args.tmux_command:
+        args.tmux_command = "claude" if is_claude else "codex"
+    if not args.tag_assistant:
+        args.tag_assistant = "[Claude]" if is_claude else "[Codex]"
+
+    if is_claude:
+        # Claude Code: conversation file lives under ~/.claude/projects/<key>/
+        history_path = Path(args.history_path).expanduser() if args.history_path != str(CODEX_HISTORY_PATH) else CLAUDE_HISTORY_PATH
+        session_id = (args.session_id or "").strip()
+        if not session_id:
+            session_id = latest_claude_session_id(WORKSPACE_ROOT)
+        if not session_id:
+            session_id = latest_claude_history_session_id(WORKSPACE_ROOT)
+        if not session_id:
+            raise SystemExit("relay-daemon: no se pudo detectar session_id de Claude Code (usar --session-id)")
+        session_file = find_claude_conversation_file(session_id, WORKSPACE_ROOT)
+        if session_file is None:
+            raise SystemExit(f"relay-daemon: no se encontro conversation file de Claude Code para {session_id}")
+    else:
+        # Codex backend (original)
+        history_path = Path(args.history_path).expanduser()
+        session_id = (args.session_id or "").strip()
+        if not session_id:
+            session_id = latest_workspace_session_id(WORKSPACE_ROOT)
+        if not session_id:
+            session_id = latest_history_session_id(history_path)
+        if not session_id:
+            raise SystemExit("relay-daemon: no se pudo detectar session_id (usar --session-id)")
+        session_file = find_session_file(session_id)
+        if session_file is None:
+            raise SystemExit(f"relay-daemon: no se encontro session file para {session_id}")
 
     relay_state = load_json(RELAY_STATE_PATH, {})
     history_offset = (
@@ -763,6 +963,7 @@ def command_relay_daemon(args):
             {
                 "ok": True,
                 "mode": "relay-daemon",
+                "backend": backend,
                 "session_id": session_id,
                 "session_file": str(session_file),
                 "history_path": str(history_path),
@@ -780,17 +981,28 @@ def command_relay_daemon(args):
     )
 
     while True:
-        current_session_file = find_session_file(session_id)
+        # Refresh session file in case it changed
+        if is_claude:
+            current_session_file = find_claude_conversation_file(session_id, WORKSPACE_ROOT)
+        else:
+            current_session_file = find_session_file(session_id)
         if current_session_file is not None and current_session_file != session_file:
             session_file = current_session_file
             session_offset = 0
 
+        # --- Mirror CLI user input to Telegram ---
         if args.cli_mirror:
             history_rows, history_offset = read_new_jsonl_rows(history_path, history_offset)
             for row in history_rows:
-                if str(row.get("session_id", "")) != session_id:
-                    continue
-                text = str(row.get("text", "")).strip()
+                if is_claude:
+                    # Claude history.jsonl uses "sessionId" and "display"
+                    if str(row.get("sessionId", "")) != session_id:
+                        continue
+                    text = str(row.get("display", "")).strip()
+                else:
+                    if str(row.get("session_id", "")) != session_id:
+                        continue
+                    text = str(row.get("text", "")).strip()
                 if not text:
                     continue
                 digest = text_hash(text)
@@ -802,18 +1014,27 @@ def command_relay_daemon(args):
                 if message:
                     safe_send_chunked(config, message, args.max_telegram_chars)
 
+        # --- Mirror assistant responses to Telegram ---
         if args.assistant_mirror:
             session_rows, session_offset = read_new_jsonl_rows(session_file, session_offset)
             for row in session_rows:
-                text, phase = extract_assistant_text(row)
-                if not text:
-                    continue
-                phase_suffix = f" ({phase})" if phase else ""
-                tag = f"{args.tag_assistant}{phase_suffix}"
+                if is_claude:
+                    text, model_info = extract_claude_assistant_text(row)
+                    if not text:
+                        continue
+                    phase_suffix = f" ({model_info})" if model_info else ""
+                    tag = f"{args.tag_assistant}{phase_suffix}"
+                else:
+                    text, phase = extract_assistant_text(row)
+                    if not text:
+                        continue
+                    phase_suffix = f" ({phase})" if phase else ""
+                    tag = f"{args.tag_assistant}{phase_suffix}"
                 message = format_tagged_message(tag, text, args.max_forward_chars)
                 if message:
                     safe_send_chunked(config, message, args.max_telegram_chars)
 
+        # --- Receive incoming Telegram messages ---
         incoming = []
         while True:
             queued = inbox_next()
@@ -826,6 +1047,7 @@ def command_relay_daemon(args):
         if not incoming and not webhook_enabled(config):
             incoming = poll_updates(config, state, min(args.long_poll, 25))
 
+        # --- Dispatch incoming to CLI/resume ---
         for msg in incoming:
             text = str(msg.get("text", "")).strip()
             if not text:
@@ -875,19 +1097,30 @@ def command_relay_daemon(args):
                         continue
 
             if args.codex_resume and (not dispatched or args.codex_resume_always):
-                ok, detail = run_codex_resume(
-                    session_id=session_id,
-                    prompt_text=prompt,
-                    codex_cmd=args.codex_cmd,
-                    timeout_sec=args.codex_timeout,
-                    full_auto=args.codex_full_auto,
-                    detach=args.codex_detach,
-                )
+                if is_claude:
+                    ok, detail = run_claude_resume(
+                        session_id=session_id,
+                        prompt_text=prompt,
+                        claude_cmd=args.codex_cmd,
+                        timeout_sec=args.codex_timeout,
+                        detach=args.codex_detach,
+                    )
+                    event_name = "claude_resume_dispatch"
+                else:
+                    ok, detail = run_codex_resume(
+                        session_id=session_id,
+                        prompt_text=prompt,
+                        codex_cmd=args.codex_cmd,
+                        timeout_sec=args.codex_timeout,
+                        full_auto=args.codex_full_auto,
+                        detach=args.codex_detach,
+                    )
+                    event_name = "codex_resume_dispatch"
                 print(
                     json.dumps(
                         {
                             "ok": ok,
-                            "event": "codex_resume_dispatch",
+                            "event": event_name,
                             "session_id": session_id,
                             "detail": detail,
                             "text_hash": digest,
@@ -916,6 +1149,7 @@ def command_relay_daemon(args):
         save_json(
             RELAY_STATE_PATH,
             {
+                "backend": backend,
                 "session_id": session_id,
                 "session_file": str(session_file),
                 "history_path": str(history_path),
@@ -1396,8 +1630,10 @@ def build_parser():
 
     relay_cmd = sub.add_parser(
         "relay-daemon",
-        help="Mirror Codex CLI/session messages to Telegram and inject Telegram replies into Codex",
+        help="Mirror Codex/Claude CLI session messages to Telegram and inject Telegram replies",
     )
+    relay_cmd.add_argument("--backend", default="auto", choices=["codex", "claude", "auto"],
+                           help="Backend CLI to use (default: auto-detect)")
     relay_cmd.add_argument("--session-id", default="")
     relay_cmd.add_argument("--history-path", default=str(CODEX_HISTORY_PATH))
     relay_cmd.add_argument("--from-now", action="store_true")
@@ -1406,18 +1642,18 @@ def build_parser():
     relay_cmd.add_argument("--max-inbox-batch", type=int, default=20)
     relay_cmd.add_argument("--max-telegram-chars", type=int, default=3900)
     relay_cmd.add_argument("--max-forward-chars", type=int, default=12000)
-    relay_cmd.add_argument("--codex-cmd", default="codex")
+    relay_cmd.add_argument("--codex-cmd", default="")
     relay_cmd.add_argument("--codex-timeout", type=int, default=0)
     relay_cmd.add_argument("--telegram-prompt-prefix", default="")
-    relay_cmd.add_argument("--ack-text", default="Recibido por TelecodexBot. Lo envio a Codex.")
+    relay_cmd.add_argument("--ack-text", default="Recibido por TelecodexBot. Lo envio al asistente.")
     relay_cmd.add_argument("--tmux-target", default="")
-    relay_cmd.add_argument("--tmux-command", default="codex")
+    relay_cmd.add_argument("--tmux-command", default="")
     relay_cmd.add_argument("--tmux-inject", action="store_true")
     relay_cmd.add_argument("--no-tmux-enter", dest="tmux_enter", action="store_false")
     relay_cmd.add_argument("--codex-resume-fallback", action="store_true")
     relay_cmd.add_argument("--codex-resume-always", action="store_true")
     relay_cmd.add_argument("--tag-cli", default="[Usuario via CLI]")
-    relay_cmd.add_argument("--tag-assistant", default="[Codex]")
+    relay_cmd.add_argument("--tag-assistant", default="")
     relay_cmd.add_argument("--tag-error", default="[TelecodexBot error]")
     relay_cmd.add_argument("--no-cli-mirror", dest="cli_mirror", action="store_false")
     relay_cmd.add_argument("--no-assistant-mirror", dest="assistant_mirror", action="store_false")

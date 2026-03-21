@@ -8,6 +8,24 @@ CONFIG_HOME="${TELECODEXBOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/teleco
 STATE_HOME="${TELECODEXBOT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/telecodexbot}"
 PYTHON_BIN="${TELECODEXBOT_PYTHON_BIN:-python3}"
 CODEX_BIN="${TELECODEXBOT_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+CLAUDE_BIN="${TELECODEXBOT_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+
+# Backend: codex, claude, or auto (auto-detect)
+BACKEND="${TELECODEXBOT_BACKEND:-auto}"
+if [[ "$BACKEND" == "auto" ]]; then
+  if [[ -n "$CODEX_BIN" ]]; then
+    BACKEND="codex"
+  elif [[ -n "$CLAUDE_BIN" ]]; then
+    BACKEND="claude"
+  fi
+fi
+
+# Set CLI_BIN to the active backend binary
+if [[ "$BACKEND" == "claude" ]]; then
+  CLI_BIN="$CLAUDE_BIN"
+else
+  CLI_BIN="$CODEX_BIN"
+fi
 if command -v sha256sum >/dev/null 2>&1; then
   WORKSPACE_KEY="$(printf '%s' "$WORKSPACE_DIR" | sha256sum | awk '{print substr($1,1,16)}')"
 elif command -v shasum >/dev/null 2>&1; then

@@ -9,7 +9,11 @@ AUTONOMOUS_MODE="${TELECODEXBOT_AUTONOMOUS:-0}"
 ENSURE_WEBHOOK="${TELECODEXBOT_ENSURE_WEBHOOK:-1}"
 TMUX_INJECT="${TELECODEXBOT_TMUX_INJECT:-1}"
 TMUX_TARGET="${TELECODEXBOT_TMUX_TARGET:-}"
-TMUX_COMMAND="${TELECODEXBOT_TMUX_COMMAND:-codex}"
+if [[ "$BACKEND" == "claude" ]]; then
+  TMUX_COMMAND="${TELECODEXBOT_TMUX_COMMAND:-claude}"
+else
+  TMUX_COMMAND="${TELECODEXBOT_TMUX_COMMAND:-codex}"
+fi
 TMUX_ENTER="${TELECODEXBOT_TMUX_ENTER:-1}"
 
 is_running() {
@@ -29,12 +33,12 @@ if [[ "$ENSURE_WEBHOOK" == "1" ]]; then
   "$APP_ROOT/scripts/start_webhook.sh" >/dev/null
 fi
 
-if [[ -z "$CODEX_BIN" ]]; then
-  echo "codex no esta instalado o no esta en PATH" >&2
+if [[ -z "$CLI_BIN" ]]; then
+  echo "$BACKEND no esta instalado o no esta en PATH" >&2
   exit 1
 fi
 
-RELAY_ARGS=(relay-daemon --from-now --codex-cmd "$CODEX_BIN")
+RELAY_ARGS=(relay-daemon --backend "$BACKEND" --from-now --codex-cmd "$CLI_BIN")
 if [[ "$AUTONOMOUS_MODE" != "1" ]]; then
   RELAY_ARGS+=(--no-codex-resume)
 fi

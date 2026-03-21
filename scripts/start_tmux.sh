@@ -4,15 +4,22 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 TMUX_TARGET_FILE="$STATE_DIR/tmux-target.txt"
 SESSION_NAME="${TELECODEXBOT_SESSION_NAME:-telecodexbot-$WORKSPACE_KEY}"
-WINDOW_NAME="${TELECODEXBOT_WINDOW_NAME:-codex}"
-CODEX_CMD="${TELECODEXBOT_CODEX_CMD:-$APP_ROOT/scripts/launch_codex.sh}"
+
+if [[ "$BACKEND" == "claude" ]]; then
+  WINDOW_NAME="${TELECODEXBOT_WINDOW_NAME:-claude}"
+  CODEX_CMD="${TELECODEXBOT_CODEX_CMD:-$APP_ROOT/scripts/launch_claude.sh}"
+else
+  WINDOW_NAME="${TELECODEXBOT_WINDOW_NAME:-codex}"
+  CODEX_CMD="${TELECODEXBOT_CODEX_CMD:-$APP_ROOT/scripts/launch_codex.sh}"
+fi
+
 ATTACH_MODE="${TELECODEXBOT_ATTACH:-1}"
 STOP_SERVICE="${TELECODEXBOT_STOP_SERVICE:-1}"
 TMUX_MOUSE="${TELECODEXBOT_TMUX_MOUSE:-1}"
 
 ensure_cmd tmux
-if [[ -z "$CODEX_BIN" ]]; then
-  echo "codex no esta instalado o no esta en PATH" >&2
+if [[ -z "$CLI_BIN" ]]; then
+  echo "$BACKEND no esta instalado o no esta en PATH" >&2
   exit 1
 fi
 
@@ -23,7 +30,11 @@ fi
 "$APP_ROOT/scripts/stop_relay.sh" >/dev/null 2>&1 || true
 "$APP_ROOT/scripts/stop_webhook.sh" >/dev/null 2>&1 || true
 
-printf -v startup_cmd 'cd %q && TELECODEXBOT_CODEX_BIN=%q TELECODEXBOT_WORKSPACE_DIR=%q exec %q' "$WORKSPACE_DIR" "$CODEX_BIN" "$WORKSPACE_DIR" "$CODEX_CMD"
+if [[ "$BACKEND" == "claude" ]]; then
+  printf -v startup_cmd 'cd %q && TELECODEXBOT_CLAUDE_BIN=%q TELECODEXBOT_WORKSPACE_DIR=%q exec %q' "$WORKSPACE_DIR" "$CLI_BIN" "$WORKSPACE_DIR" "$CODEX_CMD"
+else
+  printf -v startup_cmd 'cd %q && TELECODEXBOT_CODEX_BIN=%q TELECODEXBOT_WORKSPACE_DIR=%q exec %q' "$WORKSPACE_DIR" "$CLI_BIN" "$WORKSPACE_DIR" "$CODEX_CMD"
+fi
 
 window_exists() {
   tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -Fxq "$WINDOW_NAME"
@@ -68,7 +79,7 @@ if [[ -z "$pane_id" ]]; then
   pane_id="$(resolve_pane_id)"
 fi
 if [[ -z "$pane_id" ]]; then
-  echo "no se pudo resolver el pane de Codex en $SESSION_NAME:$WINDOW_NAME" >&2
+  echo "no se pudo resolver el pane de $BACKEND en $SESSION_NAME:$WINDOW_NAME" >&2
   exit 1
 fi
 
@@ -91,6 +102,7 @@ printf '%s\n' "$pane_id" > "$TMUX_TARGET_FILE"
 TELECODEXBOT_TMUX_TARGET="$pane_id" \
 TELECODEXBOT_AUTONOMOUS="${TELECODEXBOT_AUTONOMOUS:-0}" \
 TELECODEXBOT_TMUX_INJECT="${TELECODEXBOT_TMUX_INJECT:-1}" \
+TELECODEXBOT_BACKEND="$BACKEND" \
 TELECODEXBOT_ENSURE_WEBHOOK=1 \
   "$APP_ROOT/scripts/start_relay.sh" >/dev/null
 

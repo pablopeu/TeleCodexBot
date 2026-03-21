@@ -24,6 +24,14 @@ while [[ $# -gt 0 ]]; do
       WORKSPACE_DIR="${1#*=}"
       shift
       ;;
+    --backend)
+      export TELECODEXBOT_BACKEND="$2"
+      shift 2
+      ;;
+    --backend=*)
+      export TELECODEXBOT_BACKEND="${1#*=}"
+      shift
+      ;;
     *)
       break
       ;;
@@ -70,10 +78,10 @@ case "$cmd" in
     ;;
   help|-h|--help|"")
     cat <<USAGE
-telecodexbot [--workspace DIR] <command> [args]
+telecodexbot [--workspace DIR] [--backend codex|claude|auto] <command> [args]
 
 Commands:
-  up | start         Arranca tmux + Codex + relay + webhook para el workspace
+  up | start         Arranca tmux + CLI + relay + webhook para el workspace
   down | stop        Detiene relay y webhook del workspace
   relay-start        Arranca solo el relay
   relay-stop         Detiene solo el relay
@@ -91,6 +99,7 @@ Commands:
   webhook-info       Muestra webhook actual registrado en Telegram
   sync-offset        Descarta updates viejos del bot
 
+Backend: por defecto auto-detecta (codex o claude).
 Si no pasas --workspace, usa el directorio actual.
 USAGE
     ;;
